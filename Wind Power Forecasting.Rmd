@@ -1,0 +1,265 @@
+---
+title: "Final Project - Wind Energy Forecasting"
+output:
+  html_document:
+    df_print: paged
+Group Member: Ealge Xuhui Ying, Susan Hang Yin, Jenny Shuhan Yue
+---
+
+
+## Load Libraries 
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+options(warn = -1)
+options(scipen = 999)
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+library(skimr)
+library(lubridate)
+library(kableExtra)
+library(GGally)
+library(vip)        
+library(fastshap)   
+library(MASS)
+library(ISLR)
+library(tree)
+library(ggplot2)
+library(corrplot)
+library(reshape2)
+library(PerformanceAnalytics)
+library(dplyr)
+library(lubridate)
+library(imputeTS)
+library(forecast)
+library(urca)
+library(pracma)
+library(astsa)
+library(fpp2)
+
+```
+
+## Load Data
+
+Import your data with read_csv()
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+row_data <- read_csv("Turbine_Data.csv") %>% clean_names()
+
+row_data <- row_data %>% filter(year >= 2018)
+
+head(row_data) 
+tail(row_data)
+
+```
+
+## Missing values Interpolation
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+row_data$active_power <- na_interpolation(row_data$active_power)
+row_data$ambient_temperature <- na_interpolation(row_data$ambient_temperature)
+row_data$wind_direction <- na_interpolation(row_data$wind_direction)
+row_data$wind_speed <- na_interpolation(row_data$wind_speed)
+
+head(row_data)
+
+```
+
+## Time Index: Daily
+
+Create a ts object for the aggregated data
+Create a time plot of the aggregated data
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+turbine_data <- row_data %>%
+  group_by(year, month, day) %>%
+  summarize(active_power = sum(active_power), ambient_temperature = mean(ambient_temperature), wind_direction = mean(wind_direction), wind_speed = mean(wind_speed))
+
+head(turbine_data)
+
+```
+
+## Explotary Analysis (scatterplot)
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+ turbine_data %>%
+  ggplot(aes(x=ambient_temperature,y=active_power))+
+  geom_point()
+
+ turbine_data %>%
+  ggplot(aes(x=wind_direction,y=active_power))+
+  geom_point()
+
+ turbine_data %>%
+  ggplot(aes(x=wind_speed,y=active_power))+
+  geom_point()
+
+```
+
+## Explotary Analysis (correlation)
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+cor <- turbine_data %>%
+  ungroup() %>%
+  na.omit() %>%
+  dplyr::select(ambient_temperature, wind_direction, wind_speed)
+
+chart.Correlation(cor,histogram=FALSE,pch=4)
+
+cor_analysis <- cor %>%
+  cor() %>%
+  melt() %>% #turn it into a dataframe
+  arrange(desc(value)) 
+
+cor_analysis %>%
+  ggplot(aes(x=Var1, y=Var2, fill=value))+
+  geom_tile()+
+  geom_text(aes(label=round(value,3)), color="white")
+
+```
+
+## Create time series object and plot time series
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+active_power_daily <- subset(turbine_data, select=c(active_power))
+active_power_daily
+
+# Create time series object and plot time series
+
+active_power_ts <- ts(active_power_daily, start=c(2018,1,1), frequency = 365)
+ts.plot(active_power_ts)
+
+```
+
+## Is this series white noise?
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+Box.test(active_power_ts, lag=8, fitdf=0, type="Lj")
+
+```
+
+## ADF test for stationarity
+## Use the Single Mean Version of the Test
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+active_power_df <- ur.df(active_power_ts, type = "drift")
+summary(active_power_df)
+
+```
+
+## Plot ACF and PACF
+ 
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+ggAcf(active_power_ts, lag = 200)
+
+ggPacf(active_power_ts, lag = 200)
+
+```
+
+## Fit Seasonal Exponential Smoothing Model
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+active_power_ets <- ets(active_power_ts, model="ZNZ")
+summary(active_power_ets)
+checkresiduals(active_power_ets)
+forecast(active_power_ts, h=5)
+active_power_ets %>% forecast() %>% autoplot()
+
+```
+
+## Use auto.arima
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+fitauto <- auto.arima(active_power_ts)
+summary(fitauto)
+checkresiduals(fitauto)
+
+fitauto %>% forecast(h=5)
+fitauto %>% forecast() %>% autoplot()
+
+```
+
+## Which Explanatory Variables are Important?
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+fit1_AR0 <- sarima(active_power_ts, 0, 0, 0, xreg=turbine_data[,5:7])
+summary(fit1_AR0)
+fit1_AR0
+
+```
+
+## Explore AR(1,0,0)
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+fit1_AR1 <- sarima(active_power_ts, 1, 0, 0, xreg=turbine_data[,5:7])
+summary(fit1_AR1)
+fit1_AR1
+
+```
+
+## Remove Wind Direction
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+xreg2 <- subset(turbine_data, select=-c(wind_direction))
+
+fit1_AR1 <- sarima(active_power_ts, 1, 0, 0, xreg=xreg2[,5:6])
+summary(fit1_AR1)
+fit1_AR1
+
+```
+
+## Remove Ambient Temperature
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+xreg3 <- subset(xreg2, select=-c(ambient_temperature))
+
+fit1_AR1 <- sarima(active_power_ts, 1, 0, 0, xreg=xreg3[,5])
+summary(fit1_AR1)
+fit1_AR1
+
+```
+
+## Explore p, d, q Value
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+fit1_AR5 <- sarima(active_power_ts, 5, 0, 0, xreg=xreg3[,5])
+summary(fit1_AR5)
+fit1_AR5
+
+reg_matrix <- as.matrix(xreg3[,5])
+fit1_AR5 <- Arima(active_power_ts, order=c(5, 0, 0), xreg=reg_matrix)
+summary(fit1_AR5)
+
+fit1_AR5 %>% forecast(xreg=xreg3$wind_speed, h=5)
+
+fit1_AR5 %>% forecast(xreg=xreg3$wind_speed, h=5) %>% autoplot()
+
+```
+## Use auto.arima
+
+```{r, eval=TRUE, warning=FALSE, message=FALSE}
+
+fit_auto <- auto.arima(active_power_ts, xreg=xreg3$wind_speed)
+summary(fit_auto)
+checkresiduals(fit_auto)
+
+fit_auto %>% forecast(xreg=xreg3$wind_speed, h=5)
+
+fit_auto %>% forecast(xreg=xreg3$wind_speed, h=5) %>% autoplot()
+
+```
